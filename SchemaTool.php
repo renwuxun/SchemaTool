@@ -55,76 +55,37 @@ class SchemaTool {
 
 		$oldPKField = '';
 		$oldFields = array();
-		if (!self::runVerbose('read old table fields',
-			function()use($mysqli, $schema, $table, &$oldFields, &$oldPKField){
-				if (!$mysqli->real_query("DESCRIBE `$schema`.`$table`")){
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$result = $mysqli->store_result();
-				while ($row = $result->fetch_assoc()) {
-					if ($oldPKField=='' && $row['Key']=='PRI') {
-						$oldPKField = $row['Field'];
-					}
-					$oldFields[] = $row['Field'];
-				}
-				if (empty($oldFields)) {
-					self::debugIndent("can not get fields in $schema.$table");
-					return false;
-				}
-				self::debugIndent("found primary key $oldPKField");
-				return true;
-			}
-		)) {
+		self::debug("read old table fields  [ start ]");
+		if (!self::readFieldsAndPK($mysqli, $schema, $table, $oldFields, $oldPKField)) {
+			self::debug("read old table fields  [ failed ]");
 			return false;
+		}else{
+			self::debug("read old table fields  [ ok ]");
 		}
 
 
 		$tableNew = $table.'_new';
 
 
-		$tableCreateSql = str_replace($table, $tableNew, $tableCreateSql);
-		if (!self::runVerbose('create new table',
-			function()use($mysqli, $tableCreateSql, $schema){
-				if (!$mysqli->select_db($schema)) {
-					self::debugIndent("can not select db: {$mysqli->error}");
-					return false;
-				}
-				if (!$mysqli->real_query($tableCreateSql)) {
-					self::debugIndent("create table failed: {$mysqli->error}");
-					return false;
-				}
-				return true;
-			}
-		)) {
+		$tableCreateSql = preg_replace("/$table/", $tableNew, $tableCreateSql, 1);
+		self::debug("create new table  [ start ]");
+		if (!self::createTable($mysqli, $tableCreateSql, $schema)) {
+			self::debug("create new table  [ failed ]");
 			return false;
+		} else {
+			self::debug("create new table  [ ok ]");
 		}
 
 
 		$newPKField = '';
 		$newFields = array();
-		if (!self::runVerbose('read new table fields',
-			function()use($mysqli, $schema, $tableNew, &$newFields, &$newPKField){
-				if (!$mysqli->real_query("DESCRIBE `$schema`.`$tableNew`")) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$result = $mysqli->store_result();
-				while ($row = $result->fetch_assoc()) {
-					if ($newPKField=='' && $row['Key']=='PRI') {
-						$newPKField = $row['Field'];
-					}
-					$newFields[] = $row['Field'];
-				}
-				if (empty($newFields)) {
-					self::debugIndent("can not get fields of $schema.$tableNew");
-					return false;
-				}
-				return true;
-			}
-		)) {
+		self::debug("read new table fields  [ start ]");
+		if (!self::readFieldsAndPK($mysqli, $schema, $tableNew, $newFields, $newPKField)) {
 			self::removeUnuseTable($schema, $tableNew, $mysqli);
+			self::debug("read new table fields  [ failed ]");
 			return false;
+		} else {
+			self::debug("read new table fields  [ ok ]");
 		}
 
 
@@ -156,89 +117,36 @@ class SchemaTool {
 		}
 
 
-		if (!self::runVerbose("create trigger `$schema`.`after_{$table}_insert`",
-			function()use($mysqli, $schema, $table, $tableNew, $oldFields){
-				$sql = "CREATE TRIGGER `$schema`.`after_{$table}_insert` AFTER insert ";
-				$sql .= "ON `$schema`.`$table` ";
-				$sql .= "FOR EACH ROW BEGIN ";
-				$sql .= "replace into `$schema`.`$tableNew` ";
-				$sql .= "(`";
-				$sql .= implode('`,`', $oldFields);
-				$sql .= "`)";
-				$sql .= "values";
-				$sql .= "(";
-				$sql .= implode(',', array_map(function($s){return 'new.'.$s;}, $oldFields));
-				$sql .= ");";
-				$sql .= "END";
-				if (!$mysqli->real_query($sql)) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				return true;
-			}
-		)) {
+		self::debug("create trigger `$schema`.`after_{$table}_insert`  [ start ]");
+		if (!self::createInsertTrigger($mysqli, $schema, $table, $tableNew, $oldFields)) {
 			self::removeUnuseTable($mysqli, $schema, $tableNew);
+			self::debug("create trigger `$schema`.`after_{$table}_insert`  [ failed ]");
 			return false;
+		}else{
+			self::debug("create trigger `$schema`.`after_{$table}_insert`  [ ok ]");
 		}
 
 
-		if (!self::runVerbose("create trigger `$schema`.`after_{$table}_update`",
-			function()use($mysqli, $schema, $table, $tableNew, $oldFields){
-				$sql = "CREATE TRIGGER `$schema`.`after_{$table}_update` AFTER update ";
-				$sql .= "ON `$schema`.`$table` ";
-				$sql .= "FOR EACH ROW BEGIN ";
-				$sql .= "replace into `$schema`.`$tableNew` ";
-				$sql .= "(`";
-				$sql .= implode('`,`', $oldFields);
-				$sql .= "`)";
-				$sql .= "values";
-				$sql .= "(";
-				$sql .= implode(',', array_map(function($s){return 'new.'.$s;}, $oldFields));
-				$sql .= ");";
-				$sql .= "END";
-				if (!$mysqli->real_query($sql)) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				return true;
-			}
-		)) {
+		self::debug("create trigger `$schema`.`after_{$table}_update`  [ start ]");
+		if (!self::createUpdateTrigger($mysqli, $schema, $table, $tableNew, $oldFields)) {
 			self::removeTriggers($mysqli, $schema, $table);
 			self::removeUnuseTable($mysqli, $schema, $tableNew);
+			self::debug("create trigger `$schema`.`after_{$table}_update`  [ failed ]");
 			return false;
+		} else {
+			self::debug("create trigger `$schema`.`after_{$table}_update`  [ ok ]");
 		}
 
 
 		$currentMaxPkValue = '';
-		if (!self::runVerbose("get current max pk value",
-			function()use($mysqli, $oldPKField, $schema, $table, $tableNew, &$currentMaxPkValue){
-				if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$table`")) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$result = $mysqli->store_result();
-				$row = $result->fetch_assoc();
-				if ($row['cnt'] == 0) {
-					self::debugIndent("nothing to copy");
-					return true;
-				}
-				if (!$mysqli->real_query("select $oldPKField from `$schema`.`$table` order by $oldPKField desc limit 1")) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$result = $mysqli->store_result();
-				$row = $result->fetch_assoc();
-				if (!$row) {
-					self::debugIndent("$currentMaxPkValue not found");
-					return false;
-				}
-				$currentMaxPkValue = $row[$oldPKField];
-				return true;
-			}
-		)) {
+		self::debug("get current max pk value  [ start ]");
+		if (!self::getCurrentMaxPKV($mysqli, $oldPKField, $schema, $table, $currentMaxPkValue)) {
 			self::removeTriggers($mysqli, $schema, $table);
 			self::removeUnuseTable($mysqli, $schema, $tableNew);
+			self::debug("get current max pk value  [ failed ]");
 			return false;
+		} else {
+			self::debug("get current max pk value  [ ok ]");
 		}
 
 
@@ -252,105 +160,34 @@ class SchemaTool {
 		self::debug("got current max pk value: $currentMaxPkValue");
 
 
-		if (!self::runVerbose("copy data",
-			function()use($mysqli, $currentMaxPkValue, $schema, $table, $tableNew, $oldFields, $oldPKField){
-				if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$table`")) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$result = $mysqli->store_result();
-				$row = $result->fetch_assoc();
-				if (!$row) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$total = $row['cnt'];
-				$pageSize = self::COPY_PAGE_SIZE;
-				self::debugIndent("total rows: $total");
-				$strFields = implode(',', $oldFields);
-				$maxPKV = $currentMaxPkValue;
-				while(1) {
-					if (!$mysqli->real_query("SELECT MIN(A.$oldPKField) as minpkv, MAX(A.$oldPKField) as maxpkv FROM
-						(SELECT $oldPKField FROM `$schema`.`$table` WHERE $oldPKField<=$maxPKV ORDER BY $oldPKField DESC
-						LIMIT $pageSize) AS A")
-					) {
-						self::debugIndent($mysqli->error);
-						return false;
-					}
-					if (!$result = $mysqli->store_result()) {
-						self::debugIndent($mysqli->error);
-						return false;
-					}
-					if (!$row = $result->fetch_assoc()) {
-						break;
-					}
-					if (!$mysqli->real_query("insert ignore into `$schema`.`$tableNew`($strFields)
-						select $strFields from `$schema`.`$table` where $oldPKField between {$row['minpkv']} and {$row['maxpkv']}")
-					) {
-						self::debugIndent($mysqli->error);
-						return false;
-					}
-					if ($row['minpkv'] == $row['maxpkv']) {
-						break;
-					}
-
-					$maxPKV = $row['minpkv'];
-
-					$total -= $mysqli->affected_rows;
-					self::debugIndent('remain rows: '. $total);
-					usleep(1000);//稍微歇一会儿，给别人点机会
-				}
-				return true;
-			}
-		)) {
+		self::debug("copy data  [ start ]");
+		if (!self::copyData($mysqli, $currentMaxPkValue, $schema, $table, $tableNew, $oldFields, $oldPKField)) {
 			self::removeTriggers($mysqli, $schema, $table);
 			self::removeUnuseTable($mysqli, $schema, $tableNew);
+			self::debug("copy data  [ failed ]");
 			return false;
+		}else{
+			self::debug("copy data  [ ok ]");
 		}
 
 
-		if (!self::runVerbose("check data rows",
-			function()use($mysqli, $schema, $table, $tableNew, $oldPKField, $currentMaxPkValue){
-				if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$table` where $oldPKField<=$currentMaxPkValue")) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$result = $mysqli->store_result();
-				$row = $result->fetch_assoc();
-				$oldRows = $row['cnt'];
-				if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$tableNew` where $oldPKField<=$currentMaxPkValue")) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				$result = $mysqli->store_result();
-				$row = $result->fetch_assoc();
-				if ($row['cnt']!=$oldRows || $oldRows<1) {
-					self::debugIndent("rows count where $oldPKField<=$currentMaxPkValue are different $oldRows||{$row['cnt']}");
-					return false;
-				}
-				return true;
-			}
-		)) {
+		self::debug("check data rows  [ start ]");
+		if (!self::checkRows($mysqli, $schema, $table, $tableNew, $oldPKField, $currentMaxPkValue)) {
 			self::removeTriggers($mysqli, $schema, $table);
 			self::removeUnuseTable($mysqli, $schema, $tableNew);
+			self::debug("check data rows  [ failed ]");
 			return false;
+		}else{
+			self::debug("check data rows  [ ok ]");
 		}
 
 
-		if (!self::runVerbose("rename $table=>{$table}_old,$tableNew=>$table",
-			function()use($mysqli, $schema, $table, $tableNew){
-				if (!$mysqli->real_query(
-					"RENAME TABLE
-				 	`$schema`.`$table` TO `$schema`.`{$table}_old`,
-				 	`$schema`.`$tableNew` TO `$schema`.`$table`"
-				)) {
-					self::debugIndent($mysqli->error);
-					return false;
-				}
-				return true;
-			}
-		)) {
+		self::debug("rename $table=>{$table}_old,$tableNew=>$table  [ start ]");
+		if (!self::renameTable($mysqli, $schema, $table, $tableNew)) {
+			self::debug("rename $table=>{$table}_old,$tableNew=>$table  [ failed ]");
 			return false;
+		}else{
+			self::debug("rename $table=>{$table}_old,$tableNew=>$table  [ ok ]");
 		}
 
 
@@ -369,6 +206,189 @@ class SchemaTool {
 		return true;
 	}
 
+	static public function createTable(mysqli $mysqli, $tableCreateSql, $schema){
+		if (!$mysqli->select_db($schema)) {
+			self::debugIndent("can not select db: {$mysqli->error}");
+			return false;
+		}
+		if (!$mysqli->real_query($tableCreateSql)) {
+			self::debugIndent("create table failed: {$mysqli->error}");
+			return false;
+		}
+		return true;
+	}
+
+	static public function readFieldsAndPK(mysqli $mysqli, $schema, $table, &$fields, &$pkField){
+		if (!$mysqli->real_query("DESCRIBE `$schema`.`$table`")) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		$result = $mysqli->store_result();
+		while ($row = $result->fetch_assoc()) {
+			if ($pkField=='' && $row['Key']=='PRI') {
+				$pkField = $row['Field'];
+			}
+			$fields[] = $row['Field'];
+		}
+		if (empty($fields)) {
+			self::debugIndent("can not get fields of $schema.$table");
+			return false;
+		}
+		return true;
+	}
+
+	static public function createInsertTrigger(mysqli $mysqli, $schema, $table, $tableNew, $fields){
+		$sql = "CREATE TRIGGER `$schema`.`after_{$table}_insert` AFTER insert ";
+		$sql .= "ON `$schema`.`$table` ";
+		$sql .= "FOR EACH ROW BEGIN ";
+		$sql .= "replace into `$schema`.`$tableNew` ";
+		$sql .= "(`";
+		$sql .= implode('`,`', $fields);
+		$sql .= "`)";
+		$sql .= "values";
+		$sql .= "(";
+		$sql .= implode(',', array_map(function($s){return 'new.'.$s;}, $fields));
+		$sql .= ");";
+		$sql .= "END";
+		if (!$mysqli->real_query($sql)) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		return true;
+	}
+
+	static public function createUpdateTrigger(mysqli $mysqli, $schema, $table, $tableNew, $fields){
+		$sql = "CREATE TRIGGER `$schema`.`after_{$table}_update` AFTER update ";
+		$sql .= "ON `$schema`.`$table` ";
+		$sql .= "FOR EACH ROW BEGIN ";
+		$sql .= "replace into `$schema`.`$tableNew` ";
+		$sql .= "(`";
+		$sql .= implode('`,`', $fields);
+		$sql .= "`)";
+		$sql .= "values";
+		$sql .= "(";
+		$sql .= implode(',', array_map(function($s){return 'new.'.$s;}, $fields));
+		$sql .= ");";
+		$sql .= "END";
+		if (!$mysqli->real_query($sql)) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		return true;
+	}
+
+	static public function getCurrentMaxPKV(mysqli $mysqli, $pkField, $schema, $table, &$outPutMaxPkValue){
+		if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$table`")) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		$result = $mysqli->store_result();
+		$row = $result->fetch_assoc();
+		if ($row['cnt'] == 0) {
+			self::debugIndent("nothing to copy");
+			return true;
+		}
+		if (!$mysqli->real_query("select $pkField from `$schema`.`$table` order by $pkField desc limit 1")) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		$result = $mysqli->store_result();
+		$row = $result->fetch_assoc();
+		if (!$row) {
+			self::debugIndent("currentMaxPkValue not found");
+			return false;
+		}
+		$outPutMaxPkValue = $row[$pkField];
+		return true;
+	}
+
+	static public function renameTable(mysqli $mysqli, $schema, $table, $tableNew){
+		if (!$mysqli->real_query(
+			"RENAME TABLE
+				 	`$schema`.`$table` TO `$schema`.`{$table}_old`,
+				 	`$schema`.`$tableNew` TO `$schema`.`$table`"
+		)) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		return true;
+	}
+
+	static public function checkRows(mysqli $mysqli, $schema, $table, $tableNew, $pkField, $maxPkValue) {
+		if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$table` where $pkField<=$maxPkValue")) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		$result = $mysqli->store_result();
+		$row = $result->fetch_assoc();
+		$oldRows = $row['cnt'];
+		if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$tableNew` where $pkField<=$maxPkValue")) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		$result = $mysqli->store_result();
+		$row = $result->fetch_assoc();
+		if ($row['cnt']!=$oldRows || $oldRows<1) {
+			self::debugIndent("rows count where $pkField<=$maxPkValue are different $oldRows||{$row['cnt']}");
+			return false;
+		}
+		return true;
+	}
+
+	static public function copyData(mysqli $mysqli, $maxPkValue, $schema, $table, $tableNew, $fields, $pkField) {
+		if (!$mysqli->real_query("select count(*) as cnt from `$schema`.`$table` where $pkField<=$maxPkValue")) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		$result = $mysqli->store_result();
+		$row = $result->fetch_assoc();
+		if (!$row) {
+			self::debugIndent($mysqli->error);
+			return false;
+		}
+		$total = $row['cnt'];
+		$pageSize = self::COPY_PAGE_SIZE;
+		self::debugIndent("total rows: $total");
+		$strFields = implode(',', $fields);
+		$maxPKV = $maxPkValue;
+		while(1) {
+			if (!$mysqli->real_query("SELECT MIN(A.$pkField) as minpkv, MAX(A.$pkField) as maxpkv FROM
+					(SELECT $pkField FROM `$schema`.`$table` WHERE $pkField<=$maxPKV ORDER BY $pkField DESC
+					LIMIT $pageSize) AS A")
+			) {
+				self::debugIndent($mysqli->error);
+				return false;
+			}
+			if (!$result = $mysqli->store_result()) {
+				self::debugIndent($mysqli->error);
+				return false;
+			}
+			if (!$row = $result->fetch_assoc()) {
+				break;
+			}
+			if (!$mysqli->real_query("insert ignore into `$schema`.`$tableNew`($strFields)
+					select $strFields from `$schema`.`$table` where $pkField between {$row['minpkv']} and {$row['maxpkv']}")
+			) {
+				self::debugIndent($mysqli->error);
+				return false;
+			}
+
+			$maxPKV = $row['minpkv'];
+
+			$total -= $mysqli->affected_rows;
+
+			if ($row['minpkv'] == $row['maxpkv']) {
+				self::debugIndent('remain rows: 0');
+				break;
+			}else{
+				self::debugIndent('remain rows: '. $total);
+			}
+
+			usleep(1000);//稍微歇一会儿，给别人点机会
+		}
+		return true;
+	}
+
 	static public function removeTriggers(mysqli $mysqli, $schema, $table) {
 		if($mysqli->real_query("drop trigger IF EXISTS `$schema`.`after_{$table}_insert`")){
 			self::debugIndent("trigger `$schema`.`after_{$table}_insert` removed");
@@ -378,9 +398,9 @@ class SchemaTool {
 		}
 	}
 
-	static public function removeUnuseTable(mysqli $mysqli, $schema, $tableNew) {
-		if (self::dropTable($schema, $tableNew, $mysqli)) {
-			self::debugIndent("table `$schema`.`$tableNew` droped");
+	static public function removeUnuseTable(mysqli $mysqli, $schema, $table) {
+		if (self::dropTable($schema, $table, $mysqli)) {
+			self::debugIndent("table `$schema`.`$table` droped");
 		}
 	}
 
@@ -491,7 +511,7 @@ class SchemaTool {
 
 ///////////////////////main/////////////////////////
 if (!isset($argv[4])) {
-	echo $argv[0].' host user psw path2createSqlFile';
+	echo $argv[0].' host user psw path2createSqlFile [copy]';
 	exit(1);
 }
 $host = $argv[1];
@@ -504,7 +524,46 @@ $mysqli = new mysqli();
 $mysqli->real_connect($host, $user, $psw, null, null);
 
 $createSql = rtrim(file_get_contents($sqlFile), ';');
-$r = SchemaTool::addField($createSql, 'testa', $mysqli);
+if (isset($argv[5]) && $argv[5]=='copy') {
+	$schema = '';
+	$table = '';
+	$fields = array();
+	$pkField = '';
+	if (
+		SchemaTool::parseCreateSql($createSql, $schema, $table) &&
+		SchemaTool::readFieldsAndPK($mysqli, $schema, $table, $fields, $pkField)
+	){
+		$maxPKV = '';
+		if (!$mysqli->real_query("select $pkField from `$schema`.`{$table}_new` order by $pkField asc limit 1")) {
+			echo $mysqli->error."\n";
+		}
+		$result = $mysqli->store_result();
+		$row = $result->fetch_assoc();
+		$maxPKV = $row[$pkField];
+		if (!$maxPKV) {
+			echo "read current mini pk value failed\n";
+			exit(1);
+		}else{
+			echo "current mini pk value : $maxPKV\n";
+		}
+		$r = SchemaTool::copyData($mysqli, $maxPKV, $schema, $table, $table.'_new', $fields, $pkField);
+		if ($r) {
+			echo "check rows  [ start ]\n";
+			$r = SchemaTool::checkRows($mysqli, $schema, $table, $table.'_new', $pkField, $maxPKV);
+			if ($r) {
+				echo "check rows  [ ok ]\n";
+				$r = SchemaTool::renameTable($mysqli, $schema, $table, $table.'_new');
+				if ($r) {
+					SchemaTool::removeTriggers($mysqli, $schema, $table);
+				}
+			}else{
+				echo "check rows  [ failed ]\n";
+			}
+		}
+	}
+} else {
+	$r = SchemaTool::addField($createSql, 'testa', $mysqli);
+}
 $mysqli->close();
 
 
